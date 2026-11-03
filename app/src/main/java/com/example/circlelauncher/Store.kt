@@ -73,6 +73,12 @@ class LauncherState(context: Context) {
         commit(if (exists) groups.map { if (it.id == group.id) group else it } else groups + group)
     }
 
+    fun reorder(ids: List<Long>) {
+        val ordered = ids.mapNotNull { id -> groups.firstOrNull { it.id == id } }
+        val rest = groups.filter { g -> ids.none { it == g.id } }
+        commit(ordered + rest)
+    }
+
     fun delete(id: Long) {
         commit(groups.filter { it.id != id })
     }

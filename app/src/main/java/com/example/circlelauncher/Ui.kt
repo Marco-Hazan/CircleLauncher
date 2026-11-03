@@ -3,6 +3,21 @@ package com.example.circlelauncher
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.provider.AlarmClock
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -190,7 +205,7 @@ fun AppIcon(pkg: String, diameter: Dp) {
 }
 
 @Composable
-fun Clock() {
+fun Clock(onClick: () -> Unit) {
     val now by produceState(initialValue = LocalDateTime.now()) {
         while (true) {
             delay(10_000)
@@ -200,6 +215,11 @@ fun Clock() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
             .padding(top = 32.dp, bottom = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -215,15 +235,19 @@ fun Clock() {
 }
 
 @Composable
-fun GroupCell(g: Group, onOpen: () -> Unit, onEdit: () -> Unit) {
+fun GroupBubble(g: Group, modifier: Modifier = Modifier) {
     val color = Palette[g.color % Palette.size]
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        CircleButton(68.dp, color, onClick = onOpen, onLongClick = onEdit) {
+        Box(
+            modifier = Modifier
+                .size(68.dp)
+                .border(2.dp, color, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
             val ic = iconFor(g.icon)
             if (ic != null) {
                 Icon(ic, contentDescription = g.name, tint = Color.White, modifier = Modifier.size(28.dp))
@@ -241,12 +265,11 @@ fun GroupCell(g: Group, onOpen: () -> Unit, onEdit: () -> Unit) {
 }
 
 @Composable
-fun NewCell(onClick: () -> Unit) {
+fun NewCell(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
         CircleButton(68.dp, Color(0x80FFFFFF), dashed = true, onClick = onClick) {
             Text("+", color = Color(0xB3FFFFFF), fontSize = 28.sp)
@@ -257,13 +280,115 @@ fun NewCell(onClick: () -> Unit) {
 }
 
 @Composable
+fun GroupGrid(
+    state: LauncherState,
+    onOpen: (Long) -> Unit,
+    onEdit: (Group) -> Unit,
+    onNew: () -> Unit
+) {
+    val groups = state.groups
+    var order by remember { mutableStateOf(groups.map { it.id }) }
+    LaunchedEffect(groups) { order = groups.map { it.id } }
+    var draggingId by remember { mutableStateOf<Long?>(null) }
+    var dragPos by remember { mutableStateOf(Offset.Zero) }
+    var moved by remember { mutableStateOf(0f) }
+    val openNow by rememberUpdatedState(onOpen)
+    val editNow by rememberUpdatedState(onEdit)
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    val cols = 3
+    val rows = (groups.size + 1 + cols - 1) / cols
+
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val cellW = maxWidth / cols
+        val cellH = 120.dp
+        val wPx = with(density) { cellW.toPx() }
+        val hPx = with(density) { cellH.toPx() }
+        fun slot(i: Int) = Offset((i % cols) * wPx, (i / cols) * hPx)
+
+        Box(Modifier.fillMaxWidth().height(cellH * rows)) {
+            order.forEachIndexed { idx, id ->
+                val g = groups.firstOrNull { it.id == id }
+                if (g != null) {
+                    key(id) {
+                        val groupNow by rememberUpdatedState(g)
+                        val dragging = draggingId == id
+                        val target = slot(idx)
+                        val ax by animateFloatAsState(target.x, tween(180), label = "x")
+                        val ay by animateFloatAsState(target.y, tween(180), label = "y")
+                        val px = if (dragging) dragPos.x else ax
+                        val py = if (dragging) dragPos.y else ay
+                        GroupBubble(
+                            g,
+                            Modifier
+                                .offset { IntOffset(px.roundToInt(), py.roundToInt()) }
+                                .size(cellW, cellH)
+                                .zIndex(if (dragging) 1f else 0f)
+                                .graphicsLayer {
+                                    val s = if (dragging) 1.12f else 1f
+                                    scaleX = s
+                                    scaleY = s
+                                }
+                                .pointerInput(id, wPx) {
+                                    detectTapGestures(onTap = { openNow(id) })
+                                }
+                                .pointerInput(id, wPx) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggingId = id
+                                            dragPos = slot(order.indexOf(id))
+                                            moved = 0f
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragPos += amount
+                                            moved += amount.getDistance()
+                                            val col = ((dragPos.x + wPx / 2f) / wPx).toInt().coerceIn(0, cols - 1)
+                                            val row = ((dragPos.y + hPx / 2f) / hPx).toInt().coerceAtLeast(0)
+                                            val t = (row * cols + col).coerceIn(0, maxOf(0, state.groups.size - 1))
+                                            val cur = order.indexOf(id)
+                                            if (cur >= 0 && t != cur) {
+                                                order = order.toMutableList().apply {
+                                                    removeAt(cur)
+                                                    add(t, id)
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            draggingId = null
+                                            if (moved < 16f) editNow(groupNow) else state.reorder(order)
+                                        },
+                                        onDragCancel = {
+                                            draggingId = null
+                                            order = state.groups.map { it.id }
+                                        }
+                                    )
+                                }
+                        )
+                    }
+                }
+            }
+            val ns = slot(groups.size)
+            NewCell(
+                onNew,
+                Modifier
+                    .offset { IntOffset(ns.x.roundToInt(), ns.y.roundToInt()) }
+                    .size(cellW, cellH)
+            )
+        }
+    }
+}
+
+@Composable
 fun HomeScreen(
     state: LauncherState,
     onOpen: (Long) -> Unit,
     onEdit: (Group) -> Unit,
     onNew: () -> Unit,
     onCall: () -> Unit,
-    onOptions: () -> Unit
+    onOptions: () -> Unit,
+    onClock: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -271,17 +396,14 @@ fun HomeScreen(
             .background(Color.Black)
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-        Clock()
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+        Clock(onClock)
+        Column(
             modifier = Modifier
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
         ) {
-            items(state.groups, key = { it.id }) { g ->
-                GroupCell(g, onOpen = { onOpen(g.id) }, onEdit = { onEdit(g) })
-            }
-            item { NewCell(onNew) }
+            GroupGrid(state, onOpen, onEdit, onNew)
         }
         Row(
             modifier = Modifier
@@ -492,7 +614,7 @@ fun OptionsDialog(onDismiss: () -> Unit, onDefault: () -> Unit, onPhone: () -> U
                 TextButton(onClick = onDefault) { Text("Set as default launcher") }
                 TextButton(onClick = onPhone) { Text("Phone settings") }
                 Text(
-                    "Tip: long-press a circle to edit it, or an app inside a circle to remove it.",
+                    "Tips: long-press a circle and drag it to reorder, or release without moving to edit it. Long-press an app inside a circle to remove it. Tap the clock to open alarms.",
                     color = Color(0xFFBBBBBB), fontSize = 13.sp,
                     modifier = Modifier.padding(top = 8.dp, start = 12.dp, end = 12.dp)
                 )
@@ -533,7 +655,8 @@ fun LauncherRoot(
             onEdit = { editing = it },
             onNew = { creating = true },
             onCall = { safeStart(ctx, Intent(Intent.ACTION_DIAL)) },
-            onOptions = { showOptions = true }
+            onOptions = { showOptions = true },
+            onClock = { safeStart(ctx, Intent(AlarmClock.ACTION_SHOW_ALARMS)) }
         )
     } else {
         RingScreen(

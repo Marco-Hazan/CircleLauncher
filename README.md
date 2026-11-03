@@ -3,7 +3,8 @@
 Black home screen with small group circles (title underneath), each opening into a ring of up to 8 apps.
 
 - Tap a circle: open the ring. Tap the center circle (or Back) to close it.
-- Long-press a circle: rename, change color/icon, delete.
+- Long-press a circle and drag: reorder. Long-press without moving: rename, change color/icon, delete.
+- Tap the clock: opens the alarms of the clock app.
 - In a ring: tap a dashed "+" to add an app, long-press an app to remove it.
 - Bottom left: dialer. Bottom right: options (set as default launcher, phone settings).
 
