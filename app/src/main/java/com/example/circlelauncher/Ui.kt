@@ -2,6 +2,7 @@ package com.example.circlelauncher
 
 import android.content.Context
 import android.content.Intent
+import android.provider.MediaStore
 import android.provider.Settings
 import android.provider.AlarmClock
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -22,7 +23,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -165,6 +169,7 @@ fun CircleButton(
     dashed: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
     val look = if (dashed) {
@@ -179,7 +184,7 @@ fun CircleButton(
         Modifier.border(2.dp, color, CircleShape)
     }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(diameter)
             .clip(CircleShape)
             .then(look)
@@ -287,13 +292,13 @@ fun GroupGrid(
     onNew: () -> Unit
 ) {
     val groups = state.groups
-    var order by remember { mutableStateOf(groups.map { it.id }) }
-    LaunchedEffect(groups) { order = groups.map { it.id } }
     var draggingId by remember { mutableStateOf<Long?>(null) }
     var dragPos by remember { mutableStateOf(Offset.Zero) }
+    var hover by remember { mutableIntStateOf(-1) }
     var moved by remember { mutableStateOf(0f) }
     val openNow by rememberUpdatedState(onOpen)
     val editNow by rememberUpdatedState(onEdit)
+    val groupsNow by rememberUpdatedState(groups)
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val cols = 3
@@ -305,68 +310,76 @@ fun GroupGrid(
         val wPx = with(density) { cellW.toPx() }
         val hPx = with(density) { cellH.toPx() }
         fun slot(i: Int) = Offset((i % cols) * wPx, (i / cols) * hPx)
+        // Index of the cell under the center of the dragged bubble, -1 if none.
+        fun hitIndex(pos: Offset): Int {
+            val col = ((pos.x + wPx / 2f) / wPx).toInt()
+            val row = ((pos.y + hPx / 2f) / hPx).toInt()
+            if (pos.x + wPx / 2f < 0f || pos.y + hPx / 2f < 0f || col !in 0 until cols) return -1
+            val i = row * cols + col
+            return if (i < groupsNow.size) i else -1
+        }
 
         Box(Modifier.fillMaxWidth().height(cellH * rows)) {
-            order.forEachIndexed { idx, id ->
-                val g = groups.firstOrNull { it.id == id }
-                if (g != null) {
-                    key(id) {
-                        val groupNow by rememberUpdatedState(g)
-                        val dragging = draggingId == id
-                        val target = slot(idx)
-                        val ax by animateFloatAsState(target.x, tween(180), label = "x")
-                        val ay by animateFloatAsState(target.y, tween(180), label = "y")
-                        val px = if (dragging) dragPos.x else ax
-                        val py = if (dragging) dragPos.y else ay
-                        GroupBubble(
-                            g,
-                            Modifier
-                                .offset { IntOffset(px.roundToInt(), py.roundToInt()) }
-                                .size(cellW, cellH)
-                                .zIndex(if (dragging) 1f else 0f)
-                                .graphicsLayer {
-                                    val s = if (dragging) 1.12f else 1f
-                                    scaleX = s
-                                    scaleY = s
-                                }
-                                .pointerInput(id, wPx) {
-                                    detectTapGestures(onTap = { openNow(id) })
-                                }
-                                .pointerInput(id, wPx) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = {
-                                            draggingId = id
-                                            dragPos = slot(order.indexOf(id))
-                                            moved = 0f
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        },
-                                        onDrag = { change, amount ->
-                                            change.consume()
-                                            dragPos += amount
-                                            moved += amount.getDistance()
-                                            val col = ((dragPos.x + wPx / 2f) / wPx).toInt().coerceIn(0, cols - 1)
-                                            val row = ((dragPos.y + hPx / 2f) / hPx).toInt().coerceAtLeast(0)
-                                            val t = (row * cols + col).coerceIn(0, maxOf(0, state.groups.size - 1))
-                                            val cur = order.indexOf(id)
-                                            if (cur >= 0 && t != cur) {
-                                                order = order.toMutableList().apply {
-                                                    removeAt(cur)
-                                                    add(t, id)
-                                                }
-                                            }
-                                        },
-                                        onDragEnd = {
-                                            draggingId = null
-                                            if (moved < 16f) editNow(groupNow) else state.reorder(order)
-                                        },
-                                        onDragCancel = {
-                                            draggingId = null
-                                            order = state.groups.map { it.id }
+            groups.forEachIndexed { idx, g ->
+                key(g.id) {
+                    val id = g.id
+                    val groupNow by rememberUpdatedState(g)
+                    val idxNow by rememberUpdatedState(idx)
+                    val dragging = draggingId == id
+                    val target = slot(idx)
+                    val ax by animateFloatAsState(target.x, tween(180), label = "x")
+                    val ay by animateFloatAsState(target.y, tween(180), label = "y")
+                    val px = if (dragging) dragPos.x else ax
+                    val py = if (dragging) dragPos.y else ay
+                    val isTarget = draggingId != null && !dragging && hover == idx
+                    GroupBubble(
+                        g,
+                        Modifier
+                            .offset { IntOffset(px.roundToInt(), py.roundToInt()) }
+                            .size(cellW, cellH)
+                            .zIndex(if (dragging) 1f else 0f)
+                            .graphicsLayer {
+                                val s = if (dragging) 1.12f else if (isTarget) 1.15f else 1f
+                                scaleX = s
+                                scaleY = s
+                                alpha = if (isTarget) 0.6f else 1f
+                            }
+                            .pointerInput(id) {
+                                detectTapGestures(onTap = { openNow(id) })
+                            }
+                            .pointerInput(id, wPx, hPx) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        draggingId = id
+                                        dragPos = slot(idxNow)
+                                        hover = -1
+                                        moved = 0f
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        dragPos += amount
+                                        moved += amount.getDistance()
+                                        val h = hitIndex(dragPos)
+                                        hover = if (h == idxNow) -1 else h
+                                    },
+                                    onDragEnd = {
+                                        val h = hover
+                                        draggingId = null
+                                        hover = -1
+                                        if (moved < 16f) {
+                                            editNow(groupNow)
+                                        } else if (h >= 0) {
+                                            groupsNow.getOrNull(h)?.let { state.swap(id, it.id) }
                                         }
-                                    )
-                                }
-                        )
-                    }
+                                    },
+                                    onDragCancel = {
+                                        draggingId = null
+                                        hover = -1
+                                    }
+                                )
+                            }
+                    )
                 }
             }
             val ns = slot(groups.size)
@@ -388,6 +401,7 @@ fun HomeScreen(
     onNew: () -> Unit,
     onCall: () -> Unit,
     onOptions: () -> Unit,
+    onCamera: () -> Unit,
     onClock: () -> Unit
 ) {
     Column(
@@ -405,19 +419,35 @@ fun HomeScreen(
         ) {
             GroupGrid(state, onOpen, onEdit, onNew)
         }
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 40.dp, vertical = 20.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 40.dp, vertical = 20.dp)
         ) {
-            CircleButton(56.dp, Color(0x80FFFFFF), onClick = onCall) {
+            CircleButton(56.dp, Color(0x80FFFFFF), onClick = onCall, modifier = Modifier.align(Alignment.CenterStart)) {
                 Icon(Icons.Filled.Call, contentDescription = "Call", tint = Color.White)
             }
-            CircleButton(56.dp, Color(0x80FFFFFF), onClick = onOptions) {
+            CircleButton(56.dp, Color(0x80FFFFFF), onClick = onOptions, modifier = Modifier.align(Alignment.Center)) {
                 Icon(Icons.Filled.Settings, contentDescription = "Options", tint = Color.White)
             }
+            CircleButton(56.dp, Color(0x80FFFFFF), onClick = onCamera, modifier = Modifier.align(Alignment.CenterEnd)) {
+                CameraGlyph()
+            }
         }
+    }
+}
+
+@Composable
+fun CameraGlyph() {
+    Canvas(Modifier.size(26.dp)) {
+        val w = size.width
+        val h = size.height
+        drawRoundRect(
+            Color.White, topLeft = Offset(0f, h * 0.2f), size = Size(w, h * 0.7f),
+            cornerRadius = CornerRadius(w * 0.12f), style = Stroke(width = 2.5f * density)
+        )
+        drawRect(Color.White, topLeft = Offset(w * 0.3f, h * 0.08f), size = Size(w * 0.4f, h * 0.12f))
+        drawCircle(Color.White, radius = w * 0.2f, center = Offset(w / 2f, h * 0.55f), style = Stroke(width = 2.5f * density))
     }
 }
 
@@ -428,7 +458,7 @@ fun RingScreen(
     onClose: () -> Unit,
     onLaunch: (String) -> Unit,
     onAdd: () -> Unit,
-    onRemove: (String) -> Unit
+    onAppMenu: (String) -> Unit
 ) {
     val color = Palette[group.color % Palette.size]
     var go by remember { mutableStateOf(false) }
@@ -443,14 +473,21 @@ fun RingScreen(
         contentAlignment = Alignment.Center
     ) {
         val radius = minOf(maxWidth, maxHeight).value * 0.36f
-        CircleButton(110.dp, color, onClick = onClose) {
-            Text(group.name, color = Color.White, fontSize = 16.sp, textAlign = TextAlign.Center)
+        val n = group.apps.size
+        // Tap: close. Long-press: add apps.
+        CircleButton(110.dp, color, onClick = onClose, onLongClick = onAdd) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(group.name, color = Color.White, fontSize = 16.sp, textAlign = TextAlign.Center)
+                if (n < MAX_APPS) {
+                    Text("hold to add", color = Color(0x99FFFFFF), fontSize = 10.sp)
+                }
+            }
         }
-        for (i in 0 until MAX_APPS) {
-            val ang = Math.toRadians(-90.0 + i * 45.0)
+        // n apps sit on the vertices of a regular n-gon (2 = top/bottom, 3 = triangle, 4 = square...).
+        group.apps.forEachIndexed { i, pkg ->
+            val ang = Math.toRadians(-90.0 + i * 360.0 / n)
             val dx = (radius * cos(ang)).toFloat() * p
             val dy = (radius * sin(ang)).toFloat() * p
-            val pkg = group.apps.getOrNull(i)
             Column(
                 modifier = Modifier
                     .offset(x = dx.dp, y = dy.dp)
@@ -458,25 +495,17 @@ fun RingScreen(
                     .width(76.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (pkg != null) {
-                    val label = apps.firstOrNull { it.pkg == pkg }?.label ?: pkg
-                    CircleButton(
-                        58.dp, color,
-                        onClick = { onLaunch(pkg) },
-                        onLongClick = { onRemove(pkg) }
-                    ) { AppIcon(pkg, 38.dp) }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        label, color = Color.White, fontSize = 11.sp, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
-                    )
-                } else {
-                    CircleButton(58.dp, Color(0x66FFFFFF), dashed = true, onClick = onAdd) {
-                        Text("+", color = Color(0xB3FFFFFF), fontSize = 22.sp)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text("Add", color = Color(0x99FFFFFF), fontSize = 11.sp)
-                }
+                val label = apps.firstOrNull { it.pkg == pkg }?.label ?: pkg
+                CircleButton(
+                    58.dp, color,
+                    onClick = { onLaunch(pkg) },
+                    onLongClick = { onAppMenu(pkg) }
+                ) { AppIcon(pkg, 38.dp) }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    label, color = Color.White, fontSize = 11.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
+                )
             }
         }
     }
@@ -566,14 +595,16 @@ fun GroupDialog(
 fun AppPickerDialog(
     apps: List<AppInfo>,
     taken: List<String>,
-    onPick: (String) -> Unit,
+    onPick: (List<String>) -> Unit,
     onDismiss: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf(listOf<String>()) }
+    val room = MAX_APPS - taken.size
     val shown = apps.filter { it.pkg !in taken && it.label.contains(query, ignoreCase = true) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add an app", color = Color.White) },
+        title = { Text("Add apps (${selected.size}/$room)", color = Color.White) },
         text = {
             Column {
                 OutlinedTextField(
@@ -585,22 +616,36 @@ fun AppPickerDialog(
                 Spacer(Modifier.height(8.dp))
                 LazyColumn(Modifier.heightIn(max = 340.dp)) {
                     items(shown, key = { it.pkg }) { a ->
+                        val on = a.pkg in selected
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onPick(a.pkg) }
+                                .clickable {
+                                    selected = when {
+                                        on -> selected - a.pkg
+                                        selected.size < room -> selected + a.pkg
+                                        else -> selected
+                                    }
+                                }
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             AppIcon(a.pkg, 36.dp)
                             Spacer(Modifier.width(14.dp))
-                            Text(a.label, color = Color.White, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                a.label, color = Color.White, fontSize = 15.sp, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                            )
+                            if (on) Text("✓", color = Color.White, fontSize = 18.sp)
                         }
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+        confirmButton = {
+            TextButton(onClick = { onPick(selected) }, enabled = selected.isNotEmpty()) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -614,7 +659,7 @@ fun OptionsDialog(onDismiss: () -> Unit, onDefault: () -> Unit, onPhone: () -> U
                 TextButton(onClick = onDefault) { Text("Set as default launcher") }
                 TextButton(onClick = onPhone) { Text("Phone settings") }
                 Text(
-                    "Tips: long-press a circle and drag it to reorder, or release without moving to edit it. Long-press an app inside a circle to remove it. Tap the clock to open alarms.",
+                    "Tips: long-press a circle and drag it onto another to swap them, or release without moving to edit it. Inside a circle, hold the center to add apps; long-press an app to remove or move it. Tap the clock to open alarms.",
                     color = Color(0xFFBBBBBB), fontSize = 13.sp,
                     modifier = Modifier.padding(top = 8.dp, start = 12.dp, end = 12.dp)
                 )
@@ -643,7 +688,8 @@ fun LauncherRoot(
     var creating by remember { mutableStateOf(false) }
     var showOptions by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf(false) }
-    var removing by remember { mutableStateOf<String?>(null) }
+    var menuPkg by remember { mutableStateOf<String?>(null) }
+    var movingPkg by remember { mutableStateOf<String?>(null) }
 
     val open = state.groups.firstOrNull { it.id == openId }
     BackHandler(enabled = open != null) { setOpen(null) }
@@ -656,6 +702,7 @@ fun LauncherRoot(
             onNew = { creating = true },
             onCall = { safeStart(ctx, Intent(Intent.ACTION_DIAL)) },
             onOptions = { showOptions = true },
+            onCamera = { safeStart(ctx, Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) },
             onClock = { safeStart(ctx, Intent(AlarmClock.ACTION_SHOW_ALARMS)) }
         )
     } else {
@@ -667,7 +714,7 @@ fun LauncherRoot(
                 ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { safeStart(ctx, it) }
             },
             onAdd = { picking = true },
-            onRemove = { removing = it }
+            onAppMenu = { menuPkg = it }
         )
     }
 
@@ -716,28 +763,59 @@ fun LauncherRoot(
         AppPickerDialog(
             apps = apps,
             taken = open.apps,
-            onPick = { pkg ->
-                state.addApp(open.id, pkg)
+            onPick = { pkgs ->
+                state.addApps(open.id, pkgs)
                 picking = false
             },
             onDismiss = { picking = false }
         )
     }
 
-    removing?.let { pkg ->
+    menuPkg?.let { pkg ->
         if (open != null) {
             val label = apps.firstOrNull { it.pkg == pkg }?.label ?: pkg
             AlertDialog(
-                onDismissRequest = { removing = null },
-                title = { Text("Remove $label?", color = Color.White) },
-                text = { Text("It will only be removed from this circle.", color = Color(0xFFBBBBBB)) },
-                confirmButton = {
-                    TextButton(onClick = {
-                        state.removeApp(open.id, pkg)
-                        removing = null
-                    }) { Text("Remove") }
+                onDismissRequest = { menuPkg = null },
+                title = { Text(label, color = Color.White) },
+                text = {
+                    Column {
+                        TextButton(onClick = {
+                            movingPkg = pkg
+                            menuPkg = null
+                        }) { Text("Move to another circle") }
+                        TextButton(onClick = {
+                            state.removeApp(open.id, pkg)
+                            menuPkg = null
+                        }) { Text("Remove from this circle", color = Color(0xFFF09595)) }
+                    }
                 },
-                dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } }
+                confirmButton = { TextButton(onClick = { menuPkg = null }) { Text("Cancel") } }
+            )
+        }
+    }
+
+    movingPkg?.let { pkg ->
+        if (open != null) {
+            val others = state.groups.filter { it.id != open.id }
+            AlertDialog(
+                onDismissRequest = { movingPkg = null },
+                title = { Text("Move to…", color = Color.White) },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        if (others.isEmpty()) Text("No other circles.", color = Color(0xFFBBBBBB))
+                        others.forEach { g ->
+                            val full = g.apps.size >= MAX_APPS || pkg in g.apps
+                            TextButton(
+                                enabled = !full,
+                                onClick = {
+                                    state.moveApp(open.id, g.id, pkg)
+                                    movingPkg = null
+                                }
+                            ) { Text(if (full) "${g.name} (full)" else g.name) }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { movingPkg = null }) { Text("Cancel") } }
             )
         }
     }

@@ -89,6 +89,33 @@ class LauncherState(context: Context) {
         })
     }
 
+    fun addApps(id: Long, pkgs: List<String>) {
+        commit(groups.map {
+            if (it.id == id) it.copy(apps = (it.apps + pkgs.filter { p -> p !in it.apps }).take(MAX_APPS)) else it
+        })
+    }
+
+    fun swap(a: Long, b: Long) {
+        val list = groups.toMutableList()
+        val i = list.indexOfFirst { it.id == a }
+        val j = list.indexOfFirst { it.id == b }
+        if (i < 0 || j < 0 || i == j) return
+        val t = list[i]; list[i] = list[j]; list[j] = t
+        commit(list)
+    }
+
+    fun moveApp(from: Long, to: Long, pkg: String) {
+        val dest = groups.firstOrNull { it.id == to } ?: return
+        if (from == to || dest.apps.size >= MAX_APPS || pkg in dest.apps) return
+        commit(groups.map {
+            when (it.id) {
+                from -> it.copy(apps = it.apps.filter { p -> p != pkg })
+                to -> it.copy(apps = it.apps + pkg)
+                else -> it
+            }
+        })
+    }
+
     fun removeApp(id: Long, pkg: String) {
         commit(groups.map { if (it.id == id) it.copy(apps = it.apps.filter { p -> p != pkg }) else it })
     }

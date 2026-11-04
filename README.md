@@ -3,10 +3,10 @@
 Black home screen with small group circles (title underneath), each opening into a ring of up to 8 apps.
 
 - Tap a circle: open the ring. Tap the center circle (or Back) to close it.
-- Long-press a circle and drag: reorder. Long-press without moving: rename, change color/icon, delete.
+- Long-press a circle and drag it onto another: swap them. Long-press without moving: rename, change color/icon, delete.
 - Tap the clock: opens the alarms of the clock app.
-- In a ring: tap a dashed "+" to add an app, long-press an app to remove it.
-- Bottom left: dialer. Bottom right: options (set as default launcher, phone settings).
+- In a ring: apps sit on a polygon (2 = top/bottom, 3 = triangle, 4 = square...). Hold the center to add several apps at once; long-press an app to remove it or move it to another circle.
+- Bottom: dialer (left), options (center), camera (right).
 
 ## Build the APK with GitHub (no PC software needed)
 
